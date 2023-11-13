@@ -192,6 +192,8 @@ void loop() {
         led_alarm_on();
         speaker_alarm_on();
         gps_location_start();
+        pan_start();
+        spray_start();
         Serial.println("");
         event = 3;
       }
@@ -201,6 +203,8 @@ void loop() {
         led_alarm_off();
         speaker_alarm_off();
         gps_location_stop();
+        spray_stop();
+        pan_stop();
         Serial.println("");
         event = 1;
       }
@@ -259,11 +263,19 @@ void gps_location_stop()
 
 void pan_start()
 {
-  Serial.println("State 2->3: Begin spinning the rotating motor");
+  Serial.println("Begin spinning the rotating motor");
 }
 void pan_stop()
 {
-  Serial.println("State 3->2 or 3->1: Stop spinning the rotating motor");
+  Serial.println("Stop spinning the rotating motor");
+}
+void spray_start()
+{
+  Serial.println("Start spraying");
+}
+void spray_stop()
+{
+  Serial.println("Stop spraying");
 }
 
 bool CheckForButtonPress() {
