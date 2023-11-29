@@ -16,9 +16,10 @@
 #define BIN_2 25
 #define LED 13
 #define LED_2 5
-//#define MOTOR_2 18
+#define MOTOR_2 18
 
 ESP32Encoder encoder;
+ESP32Encoder encoder2;
 // The TinyGPSPlus object
 TinyGPSPlus gps;
 
@@ -51,9 +52,10 @@ int theta = 0;
 int thetaDes = 0;
 int thetaMax = 1500;
 int D = 0;
+int error = 0;
 int dir = 1;
 
-int Kp = 75;   // TUNE THESE VALUES TO CHANGE CONTROLLER PERFORMANCE
+int Kp = 2;   // TUNE THESE VALUES TO CHANGE CONTROLLER PERFORMANCE
 int Ki = 0.01;
 int IMax = 0;
 int SumError = 0;
@@ -140,7 +142,7 @@ void setup() {
     // initilize timer
   timer0 = timerBegin(0, 80, true);  // timer 0, MWDT clock period = 12.5 ns * TIMGn_Tx_WDT_CLK_PRESCALE -> 12.5 ns * 80 -> 1000 ns = 1 us, countUp
   timerAttachInterrupt(timer0, &onTime0, true); // edge (not level) triggered
-  timerAlarmWrite(timer0, 500000, true); // 5000000 * 1 us = 5 s, autoreload true
+  timerAlarmWrite(timer0, 1500000, true); // 1500000 * 1 us = 1.5 s, autoreload true
 
   timer1 = timerBegin(1, 80, true);  // timer 1, MWDT clock period = 12.5 ns * TIMGn_Tx_WDT_CLK_PRESCALE -> 12.5 ns * 80 -> 1000 ns = 1 us, countUp
   timerAttachInterrupt(timer1, &onTime1, true); // edge (not level) triggered
@@ -289,39 +291,42 @@ void loop() {
 
   if (event == 3){
     if (interruptCounter) {
-      portENTER_CRITICAL(&timerMux0);
-      interruptCounter = false;
-      portEXIT_CRITICAL(&timerMux0);
-      
-      totalInterrupts++;
-  
-      if (totalInterrupts%2 == 0) {
-        dir = -1*dir;
-      }
+    portENTER_CRITICAL(&timerMux0);
+    interruptCounter = false;
+    portEXIT_CRITICAL(&timerMux0);
+    
+    totalInterrupts++;
+
+    if (totalInterrupts%2 == 0) {
+      thetaDes = 1;
     }
-    if (deltaT) {
+    if (totalInterrupts%2 == 1){
+      thetaDes = thetaMax;
+    }
+  }
+  
+  if (deltaT) {
       portENTER_CRITICAL(&timerMux1);
       deltaT = false;
       portEXIT_CRITICAL(&timerMux1);
 
-      omegaSpeed = count;
-      omegaDes = dir * omegaDes;
+      theta += count;
 //      potReading = analogRead(POT); 
+      
 
       //A6 CONTROL SECTION
-      int error = omegaDes - omegaSpeed;
-      int P = Kp * error;
-      SumError += error;
-      if (SumError > 500){
-        SumError = 500;
-      } else if (SumError < -500){
-        SumError = -500;
-      }
-      
-      D = Kp * (error + (SumError / 100));
       //CHANGE THIS SECTION FOR P AND PI CONTROL
 
-//      D = map(omegaDes, -omegaMax, omegaMax, -NOM_PWM_VOLTAGE, NOM_PWM_VOLTAGE);  // REPLACE THIS LINE WITH P/PI CONTROLLER CODE
+      error = thetaDes - theta;
+      int P = Kp * error;
+      SumError += error;
+      if (SumError > 100){
+        SumError = 100;
+      } else if (SumError < -100){
+        SumError = -100;
+      }
+
+      D = Kp * (error + (SumError / 25));
 
       //END A6 CONTROL SECTION
 
@@ -347,8 +352,9 @@ void loop() {
           ledcWrite(ledChannel_1, LOW);
           ledcWrite(ledChannel_2, LOW);
       }
+
       plotControlData();
-    }
+  }
   }
   /////////////////////////////////
 
@@ -384,7 +390,7 @@ void loop() {
 //        Serial.println("hall 2 detect");
 //      }
       
-      if (totalAccel > 20 || wheel_revs > 3){
+      if (totalAccel > 15 || wheel_revs > 3){
         // more than 2 g's total sensed by accelerometer
         // note: sensor by default includes force of gravity (aka 10 = 10 m/s^2)
         digitalWrite(LED, LOW);
@@ -393,6 +399,8 @@ void loop() {
         gps_location_start();
 //        spray_motor_on();
         wheel_revs = 0;
+        spray_on();
+        Serial.println("Spray on");
 //        delay(1000); // remove later
         event = 3;
 //        Serial.println(event);
@@ -407,6 +415,8 @@ void loop() {
         speaker_alarm_off();
         spray_motor_off();
         gps_location_stop();
+        spray_off();
+        Serial.println("Spray off");
         Serial.println("");
         wheel_revs = 0;
         event = 1;
@@ -421,6 +431,8 @@ void loop() {
         speaker_alarm_off();
         gps_location_stop();
         spray_motor_off();
+        Serial.println("Spray off");
+        spray_off();
         wheel_revs = 0;
         Serial.println("");
         event = 1;
@@ -520,14 +532,15 @@ void updateSerial()
   }
 }
 void plotControlData() {
-  Serial.print("Speed:");
-  Serial.print(omegaSpeed);
+  Serial.print("Position:");
+  Serial.print(theta);
   Serial.print(" ");
-  Serial.print("Desired_Speed:");
-  Serial.print(omegaDes);
+  Serial.print("Desired_Position:");  
+  Serial.print(thetaDes);
   Serial.print(" ");
-  Serial.print("PWM_Duty/10:");
-  Serial.println(D/10);  //PWM is scaled by 1/10 to get more intelligible graph
+  Serial.print("PWM_Duty:");
+  Serial.println(D);
+  Serial.print(" ");
 }
 
 //void spray_motor_on(){
@@ -597,4 +610,10 @@ void plotControlData() {
 void spray_motor_off(){
     ledcWrite(ledChannel_1, LOW);
     ledcWrite(ledChannel_2, LOW);
+}
+void spray_on(){
+  digitalWrite(MOTOR_2, HIGH);
+}
+void spray_off(){
+  digitalWrite(MOTOR_2, LOW);
 }
