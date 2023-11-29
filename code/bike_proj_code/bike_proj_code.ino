@@ -6,6 +6,7 @@
 
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
+#include <ESP32Encoder.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <TinyGPSPlus.h>
@@ -15,9 +16,10 @@
 #define BIN_2 25
 #define LED 13
 #define LED_2 5
+//#define MOTOR_2 18
 
+ESP32Encoder encoder;
 // The TinyGPSPlus object
-
 TinyGPSPlus gps;
 
 
@@ -43,14 +45,18 @@ String buttonState = "";
 volatile bool buttonIsPressed = false;
 
 int omegaSpeed = 0;
-int omegaDes = 0;
+int omegaDes = 7;
 int omegaMax = 19;   // CHANGE THIS VALUE TO YOUR MEASURED MAXIMUM SPEED
+int theta = 0;
+int thetaDes = 0;
+int thetaMax = 1500;
 int D = 0;
 int dir = 1;
 
 int Kp = 75;   // TUNE THESE VALUES TO CHANGE CONTROLLER PERFORMANCE
 int Ki = 0.01;
 int IMax = 0;
+int SumError = 0;
 
 //Setup interrupt variables ----------------------------
 volatile int count = 0; // encoder count
@@ -95,6 +101,21 @@ void IRAM_ATTR isr() {  // the function to be called when interrupt is triggered
   buttonIsPressed = true;
 }
 
+//Initialization ------------------------------------
+void IRAM_ATTR onTime0() {
+  portENTER_CRITICAL_ISR(&timerMux0);
+  interruptCounter = true; // the function to be called when timer interrupt is triggered
+  portEXIT_CRITICAL_ISR(&timerMux0);
+}
+
+void IRAM_ATTR onTime1() {
+  portENTER_CRITICAL_ISR(&timerMux1);
+  count = encoder.getCount( );
+  encoder.clearCount ( );
+  deltaT = true; // the function to be called when timer interrupt is triggered
+  portEXIT_CRITICAL_ISR(&timerMux1);
+}
+
 void setup() {
   Serial.begin(115200);
   Serial2.begin(9600);
@@ -115,6 +136,19 @@ void setup() {
   // attach the channel to the GPIO to be controlled
   ledcAttachPin(BIN_1, ledChannel_1);
   ledcAttachPin(BIN_2, ledChannel_2);
+
+    // initilize timer
+  timer0 = timerBegin(0, 80, true);  // timer 0, MWDT clock period = 12.5 ns * TIMGn_Tx_WDT_CLK_PRESCALE -> 12.5 ns * 80 -> 1000 ns = 1 us, countUp
+  timerAttachInterrupt(timer0, &onTime0, true); // edge (not level) triggered
+  timerAlarmWrite(timer0, 500000, true); // 5000000 * 1 us = 5 s, autoreload true
+
+  timer1 = timerBegin(1, 80, true);  // timer 1, MWDT clock period = 12.5 ns * TIMGn_Tx_WDT_CLK_PRESCALE -> 12.5 ns * 80 -> 1000 ns = 1 us, countUp
+  timerAttachInterrupt(timer1, &onTime1, true); // edge (not level) triggered
+  timerAlarmWrite(timer1, 10000, true); // 10000 * 1 us = 10 ms, autoreload true
+
+  // at least enable the timer alarms
+  timerAlarmEnable(timer0); // enable
+  timerAlarmEnable(timer1); // enable
 //  // Connect to wifi.
 //  Serial.println();
 //  Serial.print("Connecting with ");
@@ -248,17 +282,31 @@ void loop() {
 
   ////////////////////////////////////////
   //motor stuff
+  // READ ME
+  // for some reason the direction change 
+  // stuff doesnt work when this code is in 
+  // the switch statement
 
-
-
-  if (deltaT) {
+  if (event == 3){
+    if (interruptCounter) {
+      portENTER_CRITICAL(&timerMux0);
+      interruptCounter = false;
+      portEXIT_CRITICAL(&timerMux0);
+      
+      totalInterrupts++;
+  
+      if (totalInterrupts%2 == 0) {
+        dir = -1*dir;
+      }
+    }
+    if (deltaT) {
       portENTER_CRITICAL(&timerMux1);
       deltaT = false;
       portEXIT_CRITICAL(&timerMux1);
 
       omegaSpeed = count;
-      potReading = analogRead(POT); 
-      omegaDes = dir*map(potReading, 0, 4095, -omegaMax, omegaMax); // PLEASE SPECIFY OMEGAMAX VALUE ABOVE
+      omegaDes = dir * omegaDes;
+//      potReading = analogRead(POT); 
 
       //A6 CONTROL SECTION
       int error = omegaDes - omegaSpeed;
@@ -299,10 +347,14 @@ void loop() {
           ledcWrite(ledChannel_1, LOW);
           ledcWrite(ledChannel_2, LOW);
       }
+      plotControlData();
+    }
   }
-
   /////////////////////////////////
 
+//  if (event == 3){
+//    
+//  }
 
 
   wheel_turn();
@@ -339,7 +391,9 @@ void loop() {
         led_alarm_on();
         speaker_alarm_on();
         gps_location_start();
+//        spray_motor_on();
         wheel_revs = 0;
+//        delay(1000); // remove later
         event = 3;
 //        Serial.println(event);
 //        Serial.println("");
@@ -351,6 +405,7 @@ void loop() {
         digitalWrite(LED, LOW);
         led_alarm_off();
         speaker_alarm_off();
+        spray_motor_off();
         gps_location_stop();
         Serial.println("");
         wheel_revs = 0;
@@ -365,6 +420,7 @@ void loop() {
         led_alarm_off();
         speaker_alarm_off();
         gps_location_stop();
+        spray_motor_off();
         wheel_revs = 0;
         Serial.println("");
         event = 1;
@@ -374,6 +430,7 @@ void loop() {
 //  if (wheel_turn()){
 //    Serial.println("turn");
 //  }
+//  Serial.println(totalInterrupts);
 }
 
 
@@ -461,4 +518,83 @@ void updateSerial()
   {
     Serial.write(Serial2.read());//Forward what Software Serial received to Serial Port
   }
+}
+void plotControlData() {
+  Serial.print("Speed:");
+  Serial.print(omegaSpeed);
+  Serial.print(" ");
+  Serial.print("Desired_Speed:");
+  Serial.print(omegaDes);
+  Serial.print(" ");
+  Serial.print("PWM_Duty/10:");
+  Serial.println(D/10);  //PWM is scaled by 1/10 to get more intelligible graph
+}
+
+//void spray_motor_on(){
+//    if (interruptCounter) {
+//      portENTER_CRITICAL(&timerMux0);
+//      interruptCounter = false;
+//      portEXIT_CRITICAL(&timerMux0);
+//      
+//      totalInterrupts++;
+//  
+//      if (totalInterrupts%2 == 0) {
+//        dir = -1*dir;
+//      }
+//    }
+//    if (deltaT) {
+//      portENTER_CRITICAL(&timerMux1);
+//      deltaT = false;
+//      portEXIT_CRITICAL(&timerMux1);
+//
+//      omegaSpeed = count;
+////      potReading = analogRead(POT); 
+//      omegaDes = dir*omegaMax;
+//
+//      //A6 CONTROL SECTION
+//      int error = omegaDes - omegaSpeed;
+//      int P = Kp * error;
+//      SumError += error;
+//      if (SumError > 500){
+//        SumError = 500;
+//      } else if (SumError < -500){
+//        SumError = -500;
+//      }
+//      
+//      D = Kp * (error + (SumError / 100));
+//      //CHANGE THIS SECTION FOR P AND PI CONTROL
+//
+////      D = map(omegaDes, -omegaMax, omegaMax, -NOM_PWM_VOLTAGE, NOM_PWM_VOLTAGE);  // REPLACE THIS LINE WITH P/PI CONTROLLER CODE
+//
+//      //END A6 CONTROL SECTION
+//
+//      //Ensure that you don't go past the maximum possible command
+//      if (D > MAX_PWM_VOLTAGE) {
+//          D = MAX_PWM_VOLTAGE;
+//      }
+//      else if (D < -MAX_PWM_VOLTAGE) {
+//          D = -MAX_PWM_VOLTAGE;
+//      }
+//
+//      //Map the D value to motor directionality
+//      //FLIP ENCODER PINS SO SPEED AND D HAVE SAME SIGN
+//      if (D > 0) {
+//          ledcWrite(ledChannel_1, LOW);
+//          ledcWrite(ledChannel_2, D);
+//      }
+//      else if (D < 0) {
+//          ledcWrite(ledChannel_1, -D);
+//          ledcWrite(ledChannel_2, LOW);
+//      }
+//      else {
+//          ledcWrite(ledChannel_1, LOW);
+//          ledcWrite(ledChannel_2, LOW);
+//      }
+//      plotControlData();
+//  }
+//}
+
+void spray_motor_off(){
+    ledcWrite(ledChannel_1, LOW);
+    ledcWrite(ledChannel_2, LOW);
 }
